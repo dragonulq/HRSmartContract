@@ -5,12 +5,18 @@ import "./IHumanResources.sol";
 contract HumanResources is IHumanResources {
 
     address public manager;
-    mapping(address => uint256) salaries;
+    mapping(address => uint256) weeklyUsdSalaries;
+    mapping(address => uint256) availableSalaries;
+    mapping(address => uint256) employeeSince;
+    mapping(address => uint256) terminationTimes;
+    
     address[] employees;
     bool[] registrationStatus;
+    uint256 activeEmployees;
 
     constructor() {
         manager = msg.sender;
+        activeEmployees = 0;
     }
 
     modifier onlyManager {
@@ -27,9 +33,12 @@ contract HumanResources is IHumanResources {
         if(employeeAlreadyRegistered(employee)) {
             revert EmployeeAlreadyRegistered();
         }
-        salaries[employee] = scale(weeklyUsdSalary);
+        weeklyUsdSalaries[employee] = scale(weeklyUsdSalary);
         employees.push(employee);
         registrationStatus.push(true);
+        activeEmployees++;
+        employeeSince[employee] = block.timestamp;
+        terminationTimes[employee] = 0;
         emit EmployeeRegistered(employee, weeklyUsdSalary);
     }
 
@@ -56,7 +65,9 @@ contract HumanResources is IHumanResources {
         if(!foundEmployee) {
             revert EmployeeNotRegistered();
         }
+        activeEmployees--;
         registrationStatus[employeeIndex] = false;
+        terminationTimes[employee] = block.timestamp;
         emit EmployeeTerminated(employee);
     }
 
@@ -66,10 +77,12 @@ contract HumanResources is IHumanResources {
 
     function salaryAvailable(
         address employee
-    ) external view override returns (uint256) {}
+    ) external view override returns (uint256) {
+        return fromScale(availableSalaries[employee]);
+    }
 
     function hrManager() external view override returns (address) {
-        return address(0);
+        return manager;
     }
 
     function getActiveEmployeeCount()
@@ -77,7 +90,9 @@ contract HumanResources is IHumanResources {
         view
         override
         returns (uint256)
-    {}
+    {
+        return activeEmployees;
+    }
 
     function getEmployeeInfo(
         address employee
@@ -90,7 +105,19 @@ contract HumanResources is IHumanResources {
             uint256 employedSince,
             uint256 terminatedAt
         )
-    {}
+    {
+        bool foundEmployee = false;
+        for(uint256 i = 0;i < employees.length;i++) {
+            if(employees[i] == employee) {
+                foundEmployee = true;
+                break;
+            }
+        }
+        if(!foundEmployee) {
+            return (0, 0, 0);
+        }
+        return (weeklyUsdSalaries[employee], employeeSince[employee], terminationTimes[employee]);
+    }
 
     function scale(uint256 value) internal pure returns (uint256) {
         return value * 1e18;
