@@ -4,16 +4,20 @@ import "./IHumanResources.sol";
 
 contract HumanResources is IHumanResources {
 
-    address public manager;
-    mapping(address => uint256) weeklyUsdSalaries;
-    mapping(address => uint256) availableSalaries;
-    mapping(address => uint256) employeeSince;
-    mapping(address => uint256) terminationTimes;
-    
-    address[] employees;
-    bool[] registrationStatus;
-    uint256 activeEmployees;
+    struct EmployeeData {
+        uint256 weeklyUsdSalary;
+        uint256 availableSalary;
+        uint256 employeeSince;
+        uint256 terminationTime;
+        bool registrationStatus;
+        bool preferesUsd;
+    }
 
+    address public manager;
+    mapping(address => EmployeeData) employeesData;
+    address[] employees;
+    uint256 activeEmployees;
+    
     constructor() {
         manager = msg.sender;
         activeEmployees = 0;
@@ -33,12 +37,13 @@ contract HumanResources is IHumanResources {
         if(employeeAlreadyRegistered(employee)) {
             revert EmployeeAlreadyRegistered();
         }
-        weeklyUsdSalaries[employee] = scale(weeklyUsdSalary);
+        employeesData[employee].weeklyUsdSalary = weeklyUsdSalary;
         employees.push(employee);
-        registrationStatus.push(true);
+        employeesData[employee].registrationStatus = true;
         activeEmployees++;
-        employeeSince[employee] = block.timestamp;
-        terminationTimes[employee] = 0;
+        employeesData[employee].employeeSince = block.timestamp;
+        employeesData[employee].terminationTime = 0;
+        employeesData[employee].preferesUsd = true; // TODO if he prefered ETH, got terminated and reregistered he should prefer ETH
         emit EmployeeRegistered(employee, weeklyUsdSalary);
     }
 
@@ -54,11 +59,9 @@ contract HumanResources is IHumanResources {
 
     function terminateEmployee(address employee) external override onlyManager {
         bool foundEmployee = false;
-        uint256 employeeIndex;
         for(uint256 i = 0;i < employees.length;i++) {
             if(employees[i] == employee) {
                 foundEmployee = true;
-                employeeIndex = i;
                 break;    
             }
         }
@@ -66,19 +69,33 @@ contract HumanResources is IHumanResources {
             revert EmployeeNotRegistered();
         }
         activeEmployees--;
-        registrationStatus[employeeIndex] = false;
-        terminationTimes[employee] = block.timestamp;
+        employeesData[employee].registrationStatus = false;
+        employeesData[employee].terminationTime = block.timestamp;
         emit EmployeeTerminated(employee);
     }
 
-    function withdrawSalary() external override {}
+    function withdrawSalary() external override {
+        address employee = msg.sender;
+        uint256 savedSalary = employeesData[employee].availableSalary;
+        employeesData[employee].availableSalary = 0;
+        // if(employeesData[employee].preferesUsd) {
+        //     _transferFrom(manager, employee, savedSalary);
+        // } else {
 
-    function switchCurrency() external override {}
+        // }
+        emit SalaryWithdrawn(employee, !employeesData[employee].preferesUsd, savedSalary);
+    }
+
+    function switchCurrency() external override {
+        //withdrawSalary(); //TODO withdraw somehow as mentioned in spec
+        employeesData[msg.sender].preferesUsd = !employeesData[msg.sender].preferesUsd;
+        emit CurrencySwitched(msg.sender, employeesData[msg.sender].preferesUsd);
+    }
 
     function salaryAvailable(
         address employee
     ) external view override returns (uint256) {
-        return fromScale(availableSalaries[employee]);
+        return employeesData[employee].availableSalary;
     }
 
     function hrManager() external view override returns (address) {
@@ -116,7 +133,7 @@ contract HumanResources is IHumanResources {
         if(!foundEmployee) {
             return (0, 0, 0);
         }
-        return (weeklyUsdSalaries[employee], employeeSince[employee], terminationTimes[employee]);
+        return (employeesData[employee].weeklyUsdSalary, employeesData[employee].employeeSince, employeesData[employee].terminationTime);
     }
 
     function scale(uint256 value) internal pure returns (uint256) {
