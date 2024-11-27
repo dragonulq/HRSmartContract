@@ -1,6 +1,7 @@
 pragma solidity ^0.8.24;
 
 import "./IHumanResources.sol";
+import 
 
 contract HumanResources is IHumanResources {
 
@@ -12,11 +13,23 @@ contract HumanResources is IHumanResources {
         bool registrationStatus;
         bool preferesUsd;
     }
-
+    /**
+     * swap from usdc to WETH and then just transfer WETH which gets converted
+     * no debt
+     * 3 pool fees take one from the first 2 when swapping USDC
+     * ExactSingleInputParams from that interface to create
+     * need to import that interface from github
+     * salary available probably needs scaling down
+     * oracle gets some off chain data so its fine
+     * call/send/transfer should not infinitely fail
+     * scale the scaled by 6 usdc to 18 decimals 
+     */
     address public manager;
     mapping(address => EmployeeData) employeesData;
     address[] employees;
     uint256 activeEmployees;
+    address USDC_ADDRESS = 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85;
+    address WETH_ADDRESS = 0x4200000000000000000000000000000000000006;
     
     constructor() {
         manager = msg.sender;
@@ -30,11 +43,13 @@ contract HumanResources is IHumanResources {
         _;
     }
 
+
+
     function registerEmployee(
         address employee,
         uint256 weeklyUsdSalary
     ) external override {
-        if(employeeAlreadyRegistered(employee)) {
+        if(employeeRegistered(employee)) {
             revert EmployeeAlreadyRegistered();
         }
         employeesData[employee].weeklyUsdSalary = weeklyUsdSalary;
@@ -47,7 +62,7 @@ contract HumanResources is IHumanResources {
         emit EmployeeRegistered(employee, weeklyUsdSalary);
     }
 
-    function employeeAlreadyRegistered(address employee) internal view returns (bool) {
+    function employeeRegistered(address employee) internal view returns (bool) {
         uint256 length = employees.length;
         for(uint256 i = 0;i < length;i++) {
             if(employees[i] == employee) {
@@ -78,11 +93,15 @@ contract HumanResources is IHumanResources {
         address employee = msg.sender;
         uint256 savedSalary = employeesData[employee].availableSalary;
         employeesData[employee].availableSalary = 0;
-        // if(employeesData[employee].preferesUsd) {
-        //     _transferFrom(manager, employee, savedSalary);
-        // } else {
+        if(employeesData[employee].preferesUsd) {
+            (bool sent, bytes memory data) = employee.call{value: savedSalary}(""); // TODO
+            if(!sent) {
 
-        // }
+            }
+        } else {
+            bytes memory path = abi.encodePacked(USDC_ADDRESS, uint24(3000), WETH_ADDRESS, uint24(500), DAI_ADDRESS);
+
+        }
         emit SalaryWithdrawn(employee, !employeesData[employee].preferesUsd, savedSalary);
     }
 
@@ -123,14 +142,8 @@ contract HumanResources is IHumanResources {
             uint256 terminatedAt
         )
     {
-        bool foundEmployee = false;
-        for(uint256 i = 0;i < employees.length;i++) {
-            if(employees[i] == employee) {
-                foundEmployee = true;
-                break;
-            }
-        }
-        if(!foundEmployee) {
+    
+        if(!employeeRegistered(employee)) {
             return (0, 0, 0);
         }
         return (employeesData[employee].weeklyUsdSalary, employeesData[employee].employeeSince, employeesData[employee].terminationTime);
