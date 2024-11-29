@@ -1,7 +1,9 @@
 pragma solidity ^0.8.24;
 
 import "./IHumanResources.sol";
-import 
+import {ISwapRouter} from "../lib/v3-periphery/contracts/interfaces/ISwapRouter.sol";
+import "../lib/chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+
 
 contract HumanResources is IHumanResources {
 
@@ -30,10 +32,13 @@ contract HumanResources is IHumanResources {
     uint256 activeEmployees;
     address USDC_ADDRESS = 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85;
     address WETH_ADDRESS = 0x4200000000000000000000000000000000000006;
+    AggregatorV3Interface priceFeed;
+    uint256 decimals = 18;
     
     constructor() {
         manager = msg.sender;
         activeEmployees = 0;
+        priceFeed = AggregatorV3Interface(0x13e3Ee699D1909E989722E753853AE30b17e08c5);
     }
 
     modifier onlyManager {
@@ -99,8 +104,32 @@ contract HumanResources is IHumanResources {
 
             }
         } else {
-            bytes memory path = abi.encodePacked(USDC_ADDRESS, uint24(3000), WETH_ADDRESS, uint24(500), DAI_ADDRESS);
+            address tokenIn = USDC_ADDRESS;
+            address tokenOut = WETH_ADDRESS;
+            uint24 fee = 3000;
+            uint256 amountIn = savedSalary;
+            address recipient = employee;
+            uint256 minutesToWait = 5;
+            uint256 deadline = block.timestamp + 60 * minutesToWait;
+            uint160 sqrtPriceLimitX96 = 0;
+            uint256 amountInAfterTax = (savedSalary * 997 / 1000); 
+            uint256 oracleDecimals = priceFeed.decimals();
+            int256 answer;
+            (, answer, , , ) = priceFeed.latestRoundData();
+            uint256 expectedAmountOut;
+            if(decimals > oracleDecimals) {
+                expectedAmountOut = amountInAfterTax * (uint256(answer) * (10 ** (decimals - oracleDecimals)));
+            } else {
+                expectedAmountOut = amountInAfterTax * uint256(answer) / (10 ** (oracleDecimals - decimals));   
+            }
 
+            uint256 amountOutMinimum = expectedAmountOut * 98 / 100;
+
+            ISwapRouter.ExactInputSingleParams memory input = ISwapRouter.ExactInputSingleParams(tokenIn, tokenOut, fee, recipient, deadline, amountIn, amountOutMinimum, sqrtPriceLimitX96);
+            ISwapRouter uniswap = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
+            uniswap.exactInputSingle(input);
+            //uint256 amountOutMinimum = expectedAmountOut * 98 / 100;
+            //catBagiInAMM = catVreiSaTrimiti * 1000 / 997;
         }
         emit SalaryWithdrawn(employee, !employeesData[employee].preferesUsd, savedSalary);
     }
