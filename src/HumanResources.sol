@@ -17,18 +17,8 @@ contract HumanResources is IHumanResources {
         bool wasEverRegistered;
         uint256 accumulatedUntilTermination;
     }
-    /**
-     * swap from usdc to WETH and then just transfer WETH which gets converted
-     * no debt
-     * 3 pool fees take one from the first 2 when swapping USDC
-     * ExactSingleInputParams from that interface to create
-     * need to import that interface from github
-     * salary available probably needs scaling down
-     * oracle gets some off chain data so its fine
-     * call/send/transfer should not infinitely fail
-     * scale the scaled by 6 usdc to 18 decimals 
-     */
-    address manager;
+    
+    address immutable manager;
     mapping(address => EmployeeData) employeesData;
     mapping(address => bool) registrationStatus;
     uint256 activeEmployees;
@@ -36,11 +26,15 @@ contract HumanResources is IHumanResources {
     address WETH_ADDRESS = 0x4200000000000000000000000000000000000006;
     AggregatorV3Interface priceFeed;
     uint256 decimals = 18;
+    address employeeGettingPaid;
+    bool enteredReceiveOnce;
+    uint256 secondsPerWeek = 60 * 60 * 24 * 7;
     
     constructor() {
         manager = msg.sender;
         activeEmployees = 0;
         priceFeed = AggregatorV3Interface(0x13e3Ee699D1909E989722E753853AE30b17e08c5);
+        enteredReceiveOnce = true;
     }
 
     modifier onlyManager {
@@ -53,7 +47,7 @@ contract HumanResources is IHumanResources {
     function registerEmployee(
         address employee,
         uint256 weeklyUsdSalary
-    ) external override {
+    ) external override onlyManager {
         if(registrationStatus[employee]) {
             revert EmployeeAlreadyRegistered();
         }
@@ -91,7 +85,6 @@ contract HumanResources is IHumanResources {
     function lastActivePeriod(address employee) view internal returns (uint256) {
         uint256 currentTime = block.timestamp;
         uint256 timePassed = currentTime - employeesData[employee].lastWithdrawalTime;
-        uint256 secondsPerWeek = 60 * 60 * 24 * 7;
         return employeesData[employee].weeklyUsdSalary * timePassed / secondsPerWeek;
     }
 
@@ -103,41 +96,43 @@ contract HumanResources is IHumanResources {
         uint256 availableSalary = calculateAvailableSalary(employee);
         employeesData[employee].accumulatedUntilTermination = 0;
 
-        //uint256 lastWithdrawalTime = employeesData[employee].lastWithdrawalTime;
         employeesData[employee].lastWithdrawalTime = block.timestamp;
-
+        IERC20 usdc = IERC20(USDC_ADDRESS);
         if(employeesData[employee].preferesUsd) {
-            IERC20 usdc = IERC20(USDC_ADDRESS);
-            usdc.transfer(employee, usdToUsdc(availableSalary)); // TODO maybe see if fails what to do
+            
+            usdc.transfer(employee, availableSalary / 1e12); // TODO maybe see if fails what to do
         
         } else {
-            address tokenIn = USDC_ADDRESS;
-            address tokenOut = WETH_ADDRESS;
-            uint24 fee = 3000;
-            uint256 amountIn = usdToUsdc(availableSalary);
-            address recipient = employee;
-            uint256 minutesToWait = 5;
-            uint256 deadline = block.timestamp + 60 * minutesToWait;
-            uint160 sqrtPriceLimitX96 = 0;
+            uint256 amountIn = availableSalary / 1e12;//usdToUsdc(availableSalary);
+            uint256 deadline = block.timestamp + 60 * 5; //wait 5 minutes
             uint256 amountInAfterTax = (availableSalary * 997 / 1000); 
             uint256 oracleDecimals = priceFeed.decimals();
             int256 answer;
             (, answer, , , ) = priceFeed.latestRoundData();
             uint256 expectedAmountOut;
-            if(decimals > oracleDecimals) {
-                expectedAmountOut = amountInAfterTax * (uint256(answer) * (10 ** (decimals - oracleDecimals)));
-            } else {
-                expectedAmountOut = amountInAfterTax * uint256(answer) / (10 ** (oracleDecimals - decimals));   
-            }
+            uint256 ethPrice = uint256(answer) * 10 ** (decimals - oracleDecimals);
+            expectedAmountOut = amountInAfterTax * 1e18 / ethPrice;    // in wei
 
             uint256 amountOutMinimum = expectedAmountOut * 98 / 100;
-
-            ISwapRouter.ExactInputSingleParams memory input = ISwapRouter.ExactInputSingleParams(tokenIn, tokenOut, fee, recipient, deadline, amountIn, amountOutMinimum, sqrtPriceLimitX96);
+            
+            ISwapRouter.ExactInputSingleParams memory input = ISwapRouter.ExactInputSingleParams(USDC_ADDRESS, WETH_ADDRESS, 3000, address(this), deadline, amountIn, amountOutMinimum, 0);
             ISwapRouter uniswap = ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
+            usdc.approve(address(uniswap), amountIn);
             uint256 amountOut = uniswap.exactInputSingle(input);
+            employeeGettingPaid = employee;
+            enteredReceiveOnce = false;
             IWETH(0x4200000000000000000000000000000000000006).withdraw(amountOut);
+            employee.call{value: amountOut}("");
         }
         emit SalaryWithdrawn(employee, !employeesData[employee].preferesUsd, availableSalary);
+    }
+
+    receive() external payable {
+    
+    }
+
+    fallback() external payable {
+       
     }
 
     function switchCurrency() external override {
@@ -156,20 +151,17 @@ contract HumanResources is IHumanResources {
             revert NotAuthorized();
         }
         uint256 availableSalaryUsd = calculateAvailableSalary(employee);
-        uint256 availableSalaryUsdc = usdToUsdc(availableSalaryUsd);
+        uint256 availableSalaryUsdc = availableSalaryUsd / 1e12;//usdToUsdc(availableSalaryUsd);
         if(employeesData[employee].preferesUsd) {
             return availableSalaryUsdc;
         }
         uint256 oracleDecimals = priceFeed.decimals();
         int256 answer;
         (, answer, , , ) = priceFeed.latestRoundData();
-        uint256 availableEth;
-        if(decimals > oracleDecimals) {
-            availableEth = availableSalaryUsd * (uint256(answer) * (10 ** (decimals - oracleDecimals)));
-        } else {
-            availableEth = availableSalaryUsd * uint256(answer) / (10 ** (oracleDecimals - decimals));   
-        }
-        return availableEth;
+        
+        uint256 ethPrice = uint256(answer) * 10 ** (decimals - oracleDecimals);
+    
+        return availableSalaryUsd * 1e18 / ethPrice;  //return in wei
     }
 
     function hrManager() external view override returns (address) {
@@ -202,14 +194,6 @@ contract HumanResources is IHumanResources {
             return (0, 0, 0);
         }
         return (employeesData[employee].weeklyUsdSalary, employeesData[employee].employeeSince, employeesData[employee].terminationTime);
-    }
-
-    function scale(uint256 value) internal pure returns (uint256) {
-        return value * 1e18;
-    }
-
-    function fromScale(uint256 value) internal pure returns (uint256) {
-        return value / 1e18;
     }
 
     function usdToUsdc(uint256 value) internal pure returns (uint256) {

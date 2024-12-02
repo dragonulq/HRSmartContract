@@ -43,7 +43,6 @@ contract HumanResourcesTest is Test {
     function setUp() public {
         vm.createSelectFork(vm.envString("ETH_RPC_URL"));
         humanResources = HumanResources(payable(vm.envAddress("HR_CONTRACT")));
-        //console.log(payable(vm.envAddress("HR_CONTRACT")));
         (, int256 answer, , , ) = _ETH_USD_FEED.latestRoundData();
         uint256 feedDecimals = _ETH_USD_FEED.decimals();
         ethPrice = uint256(answer) * 10 ** (18 - feedDecimals);
@@ -133,6 +132,7 @@ contract HumanResourcesTest is Test {
         assertEq(IERC20(_USDC).balanceOf(address(alice)), aliceSalary / 1e12);
     }
 
+
     function test_withdrawSalary_eth() public {
         _mintTokensFor(_USDC, address(humanResources), 10_000e6);
         _registerEmployee(alice, aliceSalary);
@@ -173,6 +173,74 @@ contract HumanResourcesTest is Test {
     function _registerEmployee(address employeeAddress, uint256 salary) public {
         vm.prank(hrManager);
         humanResources.registerEmployee(employeeAddress, salary);
+    }
+
+    function _terminateEmployee(address employeeAddress) public {
+        vm.prank(hrManager);
+        humanResources.terminateEmployee(employeeAddress);
+    }
+
+    function test_register_employee_as_alice() public {
+        _mintTokensFor(_USDC, address(humanResources), 10_000e6);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        humanResources.registerEmployee(alice, 0);
+    
+    }
+
+    function test_terminate_employee_as_alice() public {
+        _mintTokensFor(_USDC, address(humanResources), 10_000e6);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        humanResources.terminateEmployee(alice);
+    }
+
+    function test_salary_stops_accumulating() public {
+        _mintTokensFor(_USDC, address(humanResources), 10_000e6);
+
+        _registerEmployee(alice, aliceSalary);
+        skip(6 days);
+        _terminateEmployee(alice);
+        skip(20 days);
+        
+        vm.prank(alice);
+        humanResources.withdrawSalary();
+        assertEq(
+            IERC20(_USDC).balanceOf(address(alice)),
+            ((aliceSalary / 1e12) * 6) / 7
+        );
+    }
+
+
+
+    function test_not_withdrawing_in_multiple_active_periods() public {
+        _mintTokensFor(_USDC, address(humanResources), 10_000e6);
+
+        _registerEmployee(alice, aliceSalary);
+        skip(2 days);
+        _terminateEmployee(alice);
+        skip(1 days);
+
+        _registerEmployee(alice, aliceSalary);
+        skip(2 days);
+        _terminateEmployee(alice);
+        skip(1 days);
+
+        _registerEmployee(alice, aliceSalary);
+        skip(2 days);
+        _terminateEmployee(alice);
+
+
+
+        vm.prank(alice);
+        humanResources.withdrawSalary();
+        assertEq(
+            IERC20(_USDC).balanceOf(address(alice)),
+            ((aliceSalary / 1e12) * 6) / 7
+        );
+
     }
 
     function _mintTokensFor(
